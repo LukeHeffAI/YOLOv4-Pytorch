@@ -318,7 +318,7 @@ class YoloLayer(nn.Module):
 
         # Grid offsets for each grid cell
         grid = torch.arange(start=0, end=grid_dim, step=1, device=device)
-        y_offset, x_offset = torch.meshgrid(grid,grid)
+        y_offset, x_offset = torch.meshgrid(grid, grid, indexing="ij")
 
         # Expanding offsets to be of the shape (grid_dim, grid_dim, n_anchors)
         x_offset = x_offset.expand(n_anchors, grid_dim, grid_dim).permute(1,2,0)

@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YOLOv4 Live Detection</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #121212;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  .container {
+    position: relative;
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+  }
+
+  /* Video feed */
+  #feed {
+    max-width: 100%;
+    max-height: 100vh;
+    display: block;
+    background: #111;
+    object-fit: contain;
+  }
+
+  /* Status strip - top overlay */
+  .status-strip {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 6px 12px;
+    background: rgba(0,0,0,0.55);
+    font-size: 12px;
+    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    color: #b0b0b0;
+    z-index: 10;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  .status-dot.live { background: #4CAF50; }
+  .status-dot.camera { background: #90CAF9; }
+  .status-dot.paused { background: #42A5F5; }
+  .status-dot.reconnecting { background: #FFC107; }
+  .status-dot.disconnected { background: #F44336; }
+
+  .status-label { color: #fff; font-weight: 600; }
+
+  .status-right {
+    margin-left: auto;
+    display: flex;
+    gap: 1rem;
+    color: #888;
+  }
+
+  .latency-warn { color: #FFC107; }
+  .latency-crit { color: #F44336; }
+
+  /* Controls hint - shows briefly after first auto-hide */
+  .controls-hint {
+    position: absolute;
+    bottom: 8px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 11px;
+    color: rgba(255,255,255,0.35);
+    z-index: 9;
+    transition: opacity 0.5s;
+  }
+  .controls-hint.hidden { opacity: 0; pointer-events: none; }
+
+  /* Detection badge - bottom right */
+  .detection-badge {
+    position: absolute;
+    bottom: 64px;
+    right: 12px;
+    padding: 4px 10px;
+    background: rgba(0,0,0,0.55);
+    border-radius: 12px;
+    font-size: 12px;
+    font-family: monospace;
+    color: #b0b0b0;
+    z-index: 10;
+  }
+
+  /* Controls drawer - bottom overlay */
+  .controls {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 10px 12px;
+    background: rgba(0,0,0,0.65);
+    z-index: 10;
+    transition: opacity 0.3s, transform 0.3s;
+  }
+  .controls.hidden {
+    opacity: 0;
+    transform: translateY(100%);
+    pointer-events: none;
+  }
+
+  .controls label {
+    font-size: 12px;
+    color: #b0b0b0;
+    white-space: nowrap;
+  }
+
+  .controls input[type="range"] {
+    flex: 1;
+    max-width: 200px;
+    accent-color: #4CAF50;
+  }
+
+  .thresh-value {
+    font-family: monospace;
+    font-size: 13px;
+    color: #fff;
+    min-width: 2.5em;
+  }
+
+  .controls button {
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    color: #e0e0e0;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    white-space: nowrap;
+    min-width: 44px;
+    min-height: 36px;
+  }
+  .controls button:hover { background: rgba(255,255,255,0.2); }
+  .controls button:active { background: rgba(255,255,255,0.3); }
+  .controls button:focus-visible { outline: 2px solid #4CAF50; outline-offset: 2px; }
+
+  .spacer { flex: 1; }
+
+  /* Error overlay */
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.7);
+    z-index: 20;
+    gap: 0.5rem;
+    text-align: center;
+    padding: 2rem;
+    overflow-y: auto;
+  }
+  .overlay.hidden { display: none; }
+  .overlay .icon { font-size: 48px; opacity: 0.6; }
+  .overlay .msg { font-size: 16px; color: #e0e0e0; }
+  .overlay .sub { font-size: 13px; color: #888; }
+  .overlay button {
+    margin-top: 1rem;
+    padding: 8px 20px;
+    background: #4CAF50;
+    border: none;
+    color: #fff;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .overlay button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+  /* Slow inference banner */
+  .slow-banner {
+    position: absolute;
+    top: 30px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    padding: 6px 12px;
+    background: rgba(255, 193, 7, 0.15);
+    color: #FFC107;
+    font-size: 12px;
+    z-index: 15;
+  }
+  .slow-banner.hidden { display: none; }
+
+  /* Paused overlay */
+  .paused-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.3);
+    backdrop-filter: blur(2px);
+    z-index: 15;
+    font-size: 64px;
+    color: rgba(255,255,255,0.5);
+  }
+  .paused-overlay.hidden { display: none; }
+
+  /* Start detection overlay */
+  .start-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.35);
+    z-index: 16;
+  }
+  .start-overlay.hidden { display: none; }
+  .start-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    background: rgba(76, 175, 80, 0.9);
+    border: none;
+    color: #fff;
+    padding: 28px 52px;
+    border-radius: 16px;
+    cursor: pointer;
+    font-size: 18px;
+    font-family: inherit;
+    font-weight: 600;
+    transition: transform 0.15s, background 0.2s;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  }
+  .start-btn:hover { background: rgba(76, 175, 80, 1); transform: scale(1.05); }
+  .start-btn:active { transform: scale(0.97); }
+  .start-btn:focus-visible { outline: 2px solid #fff; outline-offset: 4px; }
+  .start-btn .start-icon { font-size: 48px; line-height: 1; }
+
+  /* Detection toggle in controls */
+  .detect-toggle {
+    background: #4CAF50 !important;
+    border-color: #4CAF50 !important;
+    color: #fff !important;
+    font-weight: 600;
+    min-width: 72px;
+  }
+  .detect-toggle:hover { background: #43A047 !important; }
+  .detect-toggle.active {
+    background: rgba(244, 67, 54, 0.75) !important;
+    border-color: rgba(244, 67, 54, 0.75) !important;
+  }
+  .detect-toggle.active:hover {
+    background: rgba(244, 67, 54, 0.9) !important;
+  }
+
+  /* Responsive: mobile */
+  @media (max-width: 768px) {
+    .status-right { display: none; }
+    .controls {
+      flex-wrap: wrap;
+    }
+    .controls input[type="range"] {
+      max-width: none;
+      flex: 1;
+      min-width: 100px;
+      height: 36px;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="container" id="container">
+
+  <!-- Status strip -->
+  <div class="status-strip" role="status" aria-live="polite">
+    <span class="status-dot disconnected" id="statusDot" aria-hidden="true"></span>
+    <span class="status-label" id="statusLabel">CONNECTING...</span>
+    <span id="fpsDisplay">-- fps</span>
+    <span id="latencyDisplay">--ms</span>
+    <div class="status-right">
+      <span id="modelDisplay">--</span>
+      <span id="dimDisplay">--</span>
+    </div>
+  </div>
+
+  <!-- Slow inference banner -->
+  <div class="slow-banner hidden" id="slowBanner" aria-live="polite">
+    Inference slow -- try raising the confidence threshold to reduce detections
+  </div>
+
+  <!-- Video feed -->
+  <img id="feed" src="/stream" alt="YOLOv4 live detection feed" width="1280" height="720">
+
+  <!-- Detection badge -->
+  <div class="detection-badge" id="detectionBadge" aria-live="polite"></div>
+
+  <!-- Start detection overlay (shown when detection is off) -->
+  <div class="start-overlay" id="startOverlay">
+    <button class="start-btn" id="startBtn" title="Start Detection (D)">
+      <span class="start-icon">&#9654;</span>
+      <span>Start Detection</span>
+    </button>
+  </div>
+
+  <!-- Paused overlay -->
+  <div class="paused-overlay hidden" id="pausedOverlay">&#9654;</div>
+
+  <!-- Disconnect overlay -->
+  <div class="overlay hidden" id="disconnectOverlay" role="alert">
+    <div class="icon">&#9888;</div>
+    <div class="msg">Connection to server lost</div>
+    <div class="sub" id="disconnectSub">Check that the server is running, then retry</div>
+    <button id="retryBtn">Retry Now</button>
+  </div>
+
+  <!-- Controls hint (shown after first auto-hide) -->
+  <div class="controls-hint hidden" id="controlsHint">Tap or move mouse for controls</div>
+
+  <!-- Controls drawer -->
+  <div class="controls" id="controls">
+    <label for="threshSlider">Confidence</label>
+    <input type="range" id="threshSlider" min="0.05" max="0.95" step="0.05" value="0.25">
+    <span class="thresh-value" id="threshValue">0.25</span>
+    <button id="detectBtn" class="detect-toggle" title="Start Detection (D)">Start</button>
+    <button id="pauseBtn" title="Pause/Resume (Space)">&#9646;&#9646;</button>
+    <button id="screenshotBtn" title="Screenshot (S)">&#128247;</button>
+    <button id="fullscreenBtn" title="Fullscreen (F)">&#x26F6;</button>
+  </div>
+
+</div>
+
+<script>
+(function() {
+  // Elements
+  const feed = document.getElementById('feed');
+  const statusDot = document.getElementById('statusDot');
+  const statusLabel = document.getElementById('statusLabel');
+  const fpsDisplay = document.getElementById('fpsDisplay');
+  const latencyDisplay = document.getElementById('latencyDisplay');
+  const modelDisplay = document.getElementById('modelDisplay');
+  const dimDisplay = document.getElementById('dimDisplay');
+  const detectionBadge = document.getElementById('detectionBadge');
+  const slowBanner = document.getElementById('slowBanner');
+  const controls = document.getElementById('controls');
+  const pausedOverlay = document.getElementById('pausedOverlay');
+  const disconnectOverlay = document.getElementById('disconnectOverlay');
+  const disconnectSub = document.getElementById('disconnectSub');
+  const threshSlider = document.getElementById('threshSlider');
+  const threshValue = document.getElementById('threshValue');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const screenshotBtn = document.getElementById('screenshotBtn');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+  const retryBtn = document.getElementById('retryBtn');
+  const container = document.getElementById('container');
+
+  const controlsHint = document.getElementById('controlsHint');
+  const startOverlay = document.getElementById('startOverlay');
+  const startBtn = document.getElementById('startBtn');
+  const detectBtn = document.getElementById('detectBtn');
+
+  // State
+  let detecting = false;
+  let paused = false;
+  let lastHeartbeat = 0;
+  let failedPolls = 0;
+  let controlsTimer = null;
+  let slowSince = 0;
+  let pollIntervalId = null;
+  let staleIntervalId = null;
+  let firstHideDone = false;
+
+  // --- Stats polling ---
+  async function pollStats() {
+    try {
+      const res = await fetch('/stats');
+      const data = await res.json();
+      lastHeartbeat = Date.now();
+      failedPolls = 0;
+
+      // Sync detection state from server
+      if (data.detection_enabled !== undefined && data.detection_enabled !== detecting) {
+        detecting = data.detection_enabled;
+        updateDetectionUI();
+      }
+
+      // Connection status
+      if (paused) {
+        statusDot.className = 'status-dot paused';
+        statusLabel.textContent = 'PAUSED';
+      } else if (detecting) {
+        statusDot.className = 'status-dot live';
+        statusLabel.textContent = 'LIVE';
+      } else {
+        statusDot.className = 'status-dot camera';
+        statusLabel.textContent = 'CAMERA';
+      }
+      disconnectOverlay.classList.add('hidden');
+
+      // FPS
+      const fps = data.fps ?? 0;
+      const latency = data.latency_ms ?? 0;
+      const detCount = data.detection_count ?? 0;
+      fpsDisplay.textContent = detecting ? (Math.round(fps) + ' fps') : '-- fps';
+
+      // Latency with color thresholds
+      latencyDisplay.textContent = detecting ? (Math.round(latency) + 'ms') : '--ms';
+      latencyDisplay.classList.remove('latency-warn', 'latency-crit');
+      if (detecting && latency > 500) latencyDisplay.classList.add('latency-crit');
+      else if (detecting && latency > 200) latencyDisplay.classList.add('latency-warn');
+
+      // Model info (static, but set once)
+      if (data.model) modelDisplay.textContent = data.model;
+      if (data.network_dim) dimDisplay.textContent = data.network_dim + 'px';
+
+      // Detection badge
+      if (!detecting) {
+        detectionBadge.textContent = '';
+      } else if (detCount === 0) {
+        detectionBadge.textContent = 'no objects';
+      } else {
+        // Show top 2 classes on desktop, just count on narrow screens
+        const cc = data.class_counts || {};
+        const sorted = Object.entries(cc).sort((a, b) => b[1] - a[1]);
+        if (window.innerWidth < 768 || sorted.length > 3) {
+          detectionBadge.textContent = detCount + ' objects';
+        } else {
+          detectionBadge.textContent = sorted.map(([k, v]) => v + ' ' + k).join(', ');
+        }
+      }
+
+      // Slow inference banner
+      if (fps < 5 && fps > 0) {
+        if (slowSince === 0) slowSince = Date.now();
+        if (Date.now() - slowSince > 5000) slowBanner.classList.remove('hidden');
+      } else {
+        slowSince = 0;
+        slowBanner.classList.add('hidden');
+      }
+
+      // Sync threshold from server on first load
+      if (!threshSlider.dataset.initialized && data.obj_thresh !== undefined) {
+        threshSlider.value = data.obj_thresh;
+        threshValue.textContent = data.obj_thresh.toFixed(2);
+        threshSlider.dataset.initialized = 'true';
+      }
+
+    } catch {
+      failedPolls++;
+      if (failedPolls >= 3) {
+        statusDot.className = 'status-dot disconnected';
+        statusLabel.textContent = 'DISCONNECTED';
+        disconnectOverlay.classList.remove('hidden');
+        disconnectSub.textContent = 'Retrying every 3 seconds...';
+      } else {
+        statusDot.className = 'status-dot reconnecting';
+        statusLabel.textContent = 'RECONNECTING...';
+      }
+    }
+  }
+
+  pollIntervalId = setInterval(pollStats, 2000);
+  pollStats();
+
+  // --- Detection toggle ---
+  function toggleDetection() {
+    var newState = !detecting;
+    fetch('/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ detection_enabled: newState })
+    }).then(function() {
+      detecting = newState;
+      updateDetectionUI();
+      pollStats();
+    }).catch(function() {});
+  }
+
+  function updateDetectionUI() {
+    if (detecting) {
+      startOverlay.classList.add('hidden');
+      detectBtn.textContent = 'Stop';
+      detectBtn.classList.add('active');
+      detectBtn.title = 'Stop Detection (D)';
+    } else {
+      startOverlay.classList.remove('hidden');
+      detectBtn.textContent = 'Start';
+      detectBtn.classList.remove('active');
+      detectBtn.title = 'Start Detection (D)';
+      detectionBadge.textContent = '';
+      // Keep controls visible so Start button is accessible
+      clearTimeout(controlsTimer);
+      controls.classList.remove('hidden');
+      setControlsFocusable(true);
+    }
+  }
+
+  startBtn.addEventListener('click', toggleDetection);
+  detectBtn.addEventListener('click', toggleDetection);
+
+  // --- Reconnection ---
+  function reconnectStream() {
+    feed.src = '/stream?t=' + Date.now();
+    pollStats();
+  }
+  retryBtn.addEventListener('click', reconnectStream);
+
+  // Stale frame detection
+  staleIntervalId = setInterval(function() {
+    if (lastHeartbeat > 0 && Date.now() - lastHeartbeat > 6000 && failedPolls < 3) {
+      statusDot.className = 'status-dot reconnecting';
+      statusLabel.textContent = 'STALE';
+    }
+  }, 1000);
+
+  // --- Confidence threshold ---
+  threshSlider.addEventListener('input', function() {
+    threshValue.textContent = parseFloat(this.value).toFixed(2);
+  });
+  threshSlider.addEventListener('change', function() {
+    const val = parseFloat(this.value);
+    threshValue.textContent = val.toFixed(2);
+    fetch('/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ obj_thresh: val })
+    }).catch(function() {});
+  });
+
+  // --- Pause / Resume ---
+  function togglePause() {
+    if (!paused && (feed.naturalWidth === 0 || feed.naturalHeight === 0)) return;
+    paused = !paused;
+    if (paused) {
+      feed.dataset.src = feed.src;
+      // Draw current frame to a data URL to freeze it
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = feed.naturalWidth;
+        canvas.height = feed.naturalHeight;
+        canvas.getContext('2d').drawImage(feed, 0, 0);
+        feed.src = canvas.toDataURL('image/jpeg', 0.95);
+      } catch(e) {
+        // CORS or timing issue -- stop the MJPEG stream to save bandwidth
+        feed.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+      }
+      pausedOverlay.classList.remove('hidden');
+      pauseBtn.innerHTML = '&#9654;';
+      statusLabel.textContent = 'PAUSED';
+    } else {
+      feed.src = '/stream?t=' + Date.now();
+      pausedOverlay.classList.add('hidden');
+      pauseBtn.innerHTML = '&#9646;&#9646;';
+    }
+  }
+  pauseBtn.addEventListener('click', togglePause);
+
+  // --- Screenshot ---
+  function takeScreenshot() {
+    if (feed.naturalWidth === 0 || feed.naturalHeight === 0) return;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = feed.naturalWidth;
+      canvas.height = feed.naturalHeight;
+      canvas.getContext('2d').drawImage(feed, 0, 0);
+      const a = document.createElement('a');
+      a.href = canvas.toDataURL('image/jpeg', 0.95);
+      a.download = 'detection_' + Date.now() + '.jpg';
+      a.click();
+    } catch(e) {
+      // Flash the button red briefly to indicate failure
+      screenshotBtn.style.background = 'rgba(244,67,54,0.4)';
+      setTimeout(function() { screenshotBtn.style.background = ''; }, 1000);
+    }
+  }
+  screenshotBtn.addEventListener('click', takeScreenshot);
+
+  // --- Fullscreen ---
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      container.requestFullscreen().catch(function() {});
+    } else {
+      document.exitFullscreen();
+    }
+  }
+  fullscreenBtn.addEventListener('click', toggleFullscreen);
+  if (!document.fullscreenEnabled) fullscreenBtn.style.display = 'none';
+
+  // --- Controls auto-hide ---
+  function setControlsFocusable(enabled) {
+    var els = controls.querySelectorAll('button, input, [tabindex]');
+    for (var i = 0; i < els.length; i++) {
+      els[i].setAttribute('tabindex', enabled ? '0' : '-1');
+    }
+  }
+
+  function hideControls() {
+    // Don't auto-hide controls when detection is off (keep Start button visible)
+    if (!detecting) return;
+    controls.classList.add('hidden');
+    setControlsFocusable(false);
+    // Show hint after first auto-hide so new users know controls exist
+    if (!firstHideDone) {
+      firstHideDone = true;
+      controlsHint.classList.remove('hidden');
+      setTimeout(function() { controlsHint.classList.add('hidden'); }, 4000);
+    }
+  }
+
+  function showControls() {
+    controls.classList.remove('hidden');
+    controlsHint.classList.add('hidden');
+    setControlsFocusable(true);
+    clearTimeout(controlsTimer);
+    controlsTimer = setTimeout(hideControls, 4000);
+  }
+
+  container.addEventListener('mousemove', showControls);
+  container.addEventListener('touchstart', showControls);
+
+  // Keep controls visible while interacting with them
+  controls.addEventListener('mouseenter', function() { clearTimeout(controlsTimer); });
+  controls.addEventListener('mouseleave', showControls);
+
+  // Cancel hide timer when a control receives keyboard focus
+  controls.addEventListener('focusin', function() { clearTimeout(controlsTimer); });
+  controls.addEventListener('focusout', function() {
+    controlsTimer = setTimeout(hideControls, 4000);
+  });
+
+  // --- Keyboard shortcuts ---
+  document.addEventListener('keydown', function(e) {
+    showControls();
+    if (e.target.tagName === 'INPUT') return;
+    switch(e.key.toLowerCase()) {
+      case ' ':
+        e.preventDefault();
+        togglePause();
+        break;
+      case 's':
+        takeScreenshot();
+        break;
+      case 'f':
+        toggleFullscreen();
+        break;
+      case 'd':
+        toggleDetection();
+        break;
+      case 'c':
+        if (controls.classList.contains('hidden')) {
+          showControls();
+        } else {
+          hideControls();
+        }
+        break;
+      case 'escape':
+        if (document.fullscreenElement) document.exitFullscreen();
+        break;
+    }
+  });
+
+  // --- Pause/resume polling on page visibility change ---
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+      clearInterval(pollIntervalId);
+      clearInterval(staleIntervalId);
+      pollIntervalId = null;
+      staleIntervalId = null;
+    } else {
+      if (!pollIntervalId) {
+        pollStats();
+        pollIntervalId = setInterval(pollStats, 2000);
+      }
+      if (!staleIntervalId) {
+        staleIntervalId = setInterval(function() {
+          if (lastHeartbeat > 0 && Date.now() - lastHeartbeat > 6000 && failedPolls < 3) {
+            statusDot.className = 'status-dot reconnecting';
+            statusLabel.textContent = 'STALE';
+          }
+        }, 1000);
+      }
+    }
+  });
+
+  // --- Screen Wake Lock (mobile) ---
+  if ('wakeLock' in navigator) {
+    let wakeLock = null;
+    async function requestWakeLock() {
+      try { wakeLock = await navigator.wakeLock.request('screen'); } catch {}
+    }
+    requestWakeLock();
+    document.addEventListener('visibilitychange', function() {
+      if (document.visibilityState === 'visible') requestWakeLock();
+    });
+  }
+
+  // Show controls initially
+  showControls();
+
+})();
+</script>
+
+</body>
+</html>
