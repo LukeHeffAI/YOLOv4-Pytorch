@@ -8,3 +8,9 @@
 
 **/weights/*
 **/examples/*
+
+.venv/
+.python-version
+uv.lock.bak
+
+streaming/LAPTOP_SSH_SETUP_LOCAL.md
